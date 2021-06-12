@@ -24,7 +24,7 @@
 #define min(a, b) ((a) < (b) ? (a) : (b))
 // there should be one superblock per disk device, but we run with
 // only one device
-struct superblock sb; 
+struct superblock sb;
 
 // Read the super block.
 static void
@@ -180,7 +180,7 @@ void
 iinit()
 {
   int i = 0;
-  
+
   initlock(&itable.lock, "itable");
   for(i = 0; i < NINODE; i++) {
     initsleeplock(&itable.inode[i].lock, "inode");
@@ -385,7 +385,7 @@ bmap(struct inode *ip, uint bn)
 
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0)
-      ip->addrs[bn] = addr = balloc(ip->dev);
+      ip->addrs[bn] = addr = balloc(ip->dev); // Allocate level-1 block
     return addr;
   }
   bn -= NDIRECT;
@@ -393,15 +393,44 @@ bmap(struct inode *ip, uint bn)
   if(bn < NINDIRECT){
     // Load indirect block, allocating if necessary.
     if((addr = ip->addrs[NDIRECT]) == 0)
-      ip->addrs[NDIRECT] = addr = balloc(ip->dev);
+      ip->addrs[NDIRECT] = addr = balloc(ip->dev); // Allocate level-1 block
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
     if((addr = a[bn]) == 0){
-      a[bn] = addr = balloc(ip->dev);
+      a[bn] = addr = balloc(ip->dev); // Allocate level-2 block
       log_write(bp);
     }
-    brelse(bp);
+    brelse(bp); // Release level-1 block
     return addr;
+  }
+
+  uint doubBn;
+  struct buf *bp2;
+  bn -= NINDIRECT;
+  for (int i = 1; i <= NDOUBINDADR; i++) {
+    if (bn < NINDIRECT * NINDIRECT) {
+      if ((addr = ip->addrs[NDIRECT+i]) == 0)
+        ip->addrs[NDIRECT+i] = addr = balloc(ip->dev); // Allocate level-1 block
+      bp = bread(ip->dev, addr);
+      a = (uint*)bp->data;
+      doubBn = bn / NINDIRECT;
+      if ((addr = a[doubBn]) == 0) {
+        a[doubBn] = addr = balloc(ip->dev); // Allocate level-2 block
+        log_write(bp);
+      }
+
+      bp2 = bread(ip->dev, addr);
+      a = (uint*)bp2->data;
+      doubBn = bn % NINDIRECT;
+      if ((addr = a[doubBn]) == 0) {
+        a[doubBn] = addr = balloc(ip->dev); // Allocate level-3 block (for data)
+        log_write(bp2);
+      }
+      brelse(bp2); // Release level-2 block
+      brelse(bp); // Release level-1 block
+      return addr;
+    }
+    bn -= NINDIRECT * NINDIRECT;
   }
 
   panic("bmap: out of range");
@@ -426,16 +455,41 @@ itrunc(struct inode *ip)
     }
   }
 
-  if(ip->addrs[NDIRECT]){
+  if(ip->addrs[NDIRECT]) {
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
-    for(j = 0; j < NINDIRECT; j++){
+    for(j = 0; j < NINDIRECT; j++) {
       if(a[j])
-        bfree(ip->dev, a[j]);
+        bfree(ip->dev, a[j]); // Free level-2 block (for data)
     }
-    brelse(bp);
-    bfree(ip->dev, ip->addrs[NDIRECT]);
+    brelse(bp); // Release level-1 block
+    bfree(ip->dev, ip->addrs[NDIRECT]); // Free level-1 block
     ip->addrs[NDIRECT] = 0;
+  }
+
+  struct buf *bp2;
+  uint *b;
+  for (int i = 1; i <= NDOUBINDADR; i++) {
+    if (ip->addrs[NDIRECT+i]) {
+      bp = bread(ip->dev, ip->addrs[NDIRECT+i]);
+      a = (uint*)bp->data;
+      for (j = 0; j < NINDIRECT; j++) {
+        if (a[j]) {
+          bp2 = bread(ip->dev, a[j]);
+          b = (uint*)bp2->data;
+          for (int k = 0; k < NINDIRECT; k++) {
+            if (b[k])
+              bfree(ip->dev, b[k]); // Free level-3 block (for data)
+          }
+          brelse(bp2); // Release level-2 block
+          bfree(ip->dev, a[j]); // Free level-2 block
+          a[j] = 0;
+        }
+      }
+      brelse(bp); // Release level-1 block
+      bfree(ip->dev, ip->addrs[NDIRECT+i]); // Free level-1 block
+      ip->addrs[NDIRECT+i] = 0;
+    }
   }
 
   ip->size = 0;
@@ -637,7 +691,10 @@ namex(char *path, int nameiparent, char *name)
   // TODO: Symbolic Link to Directories
   // Modify this function to deal with symbolic links to directories.
   struct inode *ip, *next;
-  
+  char target_path[MAXPATH];
+  char nextName[DIRSIZ];
+  int r;
+
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
   else
@@ -645,6 +702,23 @@ namex(char *path, int nameiparent, char *name)
 
   while((path = skipelem(path, name)) != 0){
     ilock(ip);
+
+    while (ip->type == T_SYMLINK) { // If the path isn't finished but the type is symlink
+
+      r = readi(ip, 0, (uint64)target_path, 0, MAXPATH);
+      iunlock(ip);
+      if (r <= 0) {
+        printf("readi error! returned %d\n", r);
+        return 0;
+      }
+
+      if ((ip = namex(target_path, 0, nextName)) == 0) {
+        // printf("inner namei fail!\n");
+        return 0;
+      }
+      ilock(ip);
+    }
+
     if(ip->type != T_DIR){
       iunlockput(ip);
       return 0;

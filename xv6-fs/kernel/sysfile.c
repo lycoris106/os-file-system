@@ -275,6 +275,7 @@ create(char *path, short type, short major, short minor)
       panic("create dots");
   }
 
+
   if(dirlink(dp, name, ip->inum) < 0)
     panic("create: dirlink");
 
@@ -303,6 +304,12 @@ sys_open(void)
 
   begin_op();
 
+
+  char target_path[MAXPATH];
+  int r;
+  int thres = 0;
+
+
   if(omode & O_CREATE){
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
@@ -312,9 +319,38 @@ sys_open(void)
   } else {
     if((ip = namei(path)) == 0){
       end_op();
+      // printf("namei fail!\n");
       return -1;
     }
+
     ilock(ip);
+
+    while ((!(omode & O_NOFOLLOW)) && ip->type == T_SYMLINK) {
+      if (thres++ >= 10) {
+        iunlockput(ip);
+        end_op();
+        // printf("symlink loop!\n");
+        return -1;
+      }
+
+      r = readi(ip, 0, (uint64)target_path, 0, MAXPATH);
+      iunlockput(ip);
+      if (r <= 0) {
+        end_op();
+        printf("readi error! returned %d\n", r);
+        return -1;
+      }
+
+      if ((ip = namei(target_path)) == 0) {
+        end_op();
+        // printf("namei fail!\n");
+        return -1;
+      }
+      ilock(ip);
+    }
+
+
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -327,6 +363,7 @@ sys_open(void)
     end_op();
     return -1;
   }
+
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
     if(f)
@@ -403,13 +440,50 @@ sys_chdir(void)
   char path[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
-  
+
   begin_op();
-  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
+  if(argstr(0, path, MAXPATH) < 0){
     end_op();
     return -1;
   }
+
+  if((ip = namei(path)) == 0){
+    end_op();
+    // printf("namei fail!\n");
+    return -1;
+  }
+
   ilock(ip);
+
+  char target_path[MAXPATH];
+  int r;
+  int thres = 0;
+  while (ip->type == T_SYMLINK) {
+    if (thres++ >= 10) {
+      iunlockput(ip);
+      end_op();
+      // printf("symlink loop!\n");
+      return -1;
+    }
+
+    r = readi(ip, 0, (uint64)target_path, 0, MAXPATH);
+    iunlock(ip);
+    if (r <= 0) {
+      end_op();
+      printf("readi error! returned %d\n", r);
+      return -1;
+    }
+
+    if ((ip = namei(target_path)) == 0) {
+      end_op();
+      // printf("namei fail!\n");
+      return -1;
+    }
+
+    ilock(ip);
+  }
+
+
   if(ip->type != T_DIR){
     iunlockput(ip);
     end_op();
@@ -500,15 +574,35 @@ sys_symlink(void)
 {
   // TODO: symbolic link
   // You should implement this symlink system call.
-  // char target[MAXPATH], path[MAXPATH];
+  char target[MAXPATH], path[MAXPATH];
   // int fd;
   // struct file *f;
-  // struct inode *ip;
+  struct inode *ip;
 
-  // if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
-  //   return -1;
-  
-  panic("You should implement symlink system call.");
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  // panic("You should implement symlink system call.");
+
+  begin_op();
+
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+
+  int r = writei(ip, 0, (uint64)target, 0, MAXPATH);
+
+
+  iunlockput(ip);
+  end_op();
+
+  if (r != MAXPATH) {
+    printf("writei error! returned %d\n", r);
+    return -1;
+  }
 
   return 0;
 }

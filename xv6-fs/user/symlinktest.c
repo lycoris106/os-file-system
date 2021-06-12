@@ -57,6 +57,8 @@ stat_slink(char *pn, struct stat *st)
     return -1;
   if(fstat(fd, st) != 0)
     return -1;
+
+  close(fd);
   return 0;
 }
 
@@ -67,7 +69,7 @@ testsymlink(void)
   char buf[4] = {'a', 'b', 'c', 'd'};
   char c = 0, c2 = 0;
   struct stat st;
-    
+
   printf("Start: test symlinks\n");
 
   mkdir("/testsymlink");
@@ -79,17 +81,21 @@ testsymlink(void)
   if(r < 0)
     fail("symlink b -> a failed");
 
+
   if(write(fd1, buf, sizeof(buf)) != 4)
     fail("failed to write to a");
+
 
   if (stat_slink("/testsymlink/b", &st) != 0)
     fail("failed to stat b");
   if(st.type != T_SYMLINK)
     fail("b isn't a symlink");
 
+
   fd2 = open("/testsymlink/b", O_RDWR);
   if(fd2 < 0)
     fail("failed to open b");
+
   read(fd2, &c, 1);
   if (c != 'a')
     fail("failed to read bytes from b");
@@ -105,7 +111,7 @@ testsymlink(void)
   r = open("/testsymlink/b", O_RDWR);
   if(r >= 0)
     fail("Should not be able to open b (cycle b->a->b->..)\n");
-  
+
   r = symlink("/testsymlink/nonexistent", "/testsymlink/c");
   if(r != 0)
     fail("Symlinking to nonexistent file should succeed\n");
@@ -144,7 +150,7 @@ testsymlinkdir(void)
 {
   int r, fd1 = -1, fd2 = -1;
   char c = 0, c2 = 0;
-    
+
   printf("Start: test symlinks to directory\n");
 
   mkdir("/testsymlink2");
@@ -168,7 +174,7 @@ testsymlinkdir(void)
   if(c!=c2)
     fail("Value read from /testsymlink2/p differed from value written to /testsymlink3/q/p\n");
 
-  
+
   close(fd1);
   close(fd2);
 
@@ -196,7 +202,7 @@ concur(void)
   int nchild = 2;
 
   printf("Start: test concurrent symlinks\n");
-    
+
   fd = open("/testsymlink/z", O_CREATE | O_RDWR);
   if(fd < 0) {
     printf("FAILED: open failed");
